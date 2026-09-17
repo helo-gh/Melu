@@ -1,0 +1,157 @@
+var lastSeenProdService = {};
+
+lastSeenProdService.ROOT_ID     = 'productsLastSeen';
+lastSeenProdService.STORAGE_KEY = 'last_seen_products';
+lastSeenProdService.MAX_ITEMS   = 20;
+lastSeenProdService.TTL_MS      = 24 * 60 * 60 * 1000;
+
+lastSeenProdService._log = function () {
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[lastSeen]');
+    console.error.apply(console, args);
+};
+
+lastSeenProdService._getRoot = function () {
+    return document.getElementById(lastSeenProdService.ROOT_ID);
+};
+
+// Retorna true somente nas páginas que têm a seção #productsLastSeen
+lastSeenProdService._canRun = function () {
+    return !!lastSeenProdService._getRoot();
+};
+
+lastSeenProdService._read = function () {
+    try {
+        if (typeof localStorage === 'undefined' || !localStorage) return [];
+
+        var raw = localStorage.getItem(lastSeenProdService.STORAGE_KEY);
+        if (!raw) return [];
+
+        var items = JSON.parse(raw);
+        return Array.isArray(items) ? items : [];
+    } catch (e) {
+        return [];
+    }
+};
+
+lastSeenProdService._write = function (items) {
+    try {
+        if (typeof localStorage === 'undefined' || !localStorage) return;
+        localStorage.setItem(lastSeenProdService.STORAGE_KEY, JSON.stringify(items));
+    } catch (e) {}
+};
+
+// Remove itens com mais de 24h
+lastSeenProdService._filterExpired = function (items) {
+    var cutoff = Date.now() - lastSeenProdService.TTL_MS;
+
+    return items.filter(function (item) {
+        return item && item.id && item.ts && item.ts > cutoff;
+    });
+};
+
+lastSeenProdService._extractProductData = function (id) {
+    return { id: String(id), ts: Date.now() };
+};
+
+// Salva o produto no histórico, removendo duplicatas e itens expirados
+lastSeenProdService.save = function (id) {
+    if (!id) return;
+
+    var items = lastSeenProdService._filterExpired(lastSeenProdService._read());
+
+    items = items.filter(function (item) {
+        return String(item.id) !== String(id);
+    });
+
+    items.unshift(lastSeenProdService._extractProductData(id));
+
+    lastSeenProdService._write(items.slice(0, lastSeenProdService.MAX_ITEMS));
+
+    document.cookie = 'ls_visited=1; path=/; max-age=86400; SameSite=Lax';
+};
+
+// Retorna os IDs válidos do histórico, do mais recente para o mais antigo
+lastSeenProdService.getIds = function () {
+    return lastSeenProdService
+        ._filterExpired(lastSeenProdService._read())
+        .map(function (item) { return item.id; });
+};
+
+// Lê o ID do produto na página via input#productId, class ou ld+json schema
+lastSeenProdService._extractProductId = function () {
+    var inputEl = document.getElementById('productId')
+                || document.querySelector('[class~="productId"]');
+
+    if (inputEl && inputEl.value) {
+        return inputEl.value.trim();
+    }
+
+    var jsonScripts = document.querySelectorAll('script[type="application/ld+json"]');
+
+    for (var i = 0; i < jsonScripts.length; i++) {
+        try {
+            var schema = JSON.parse(jsonScripts[i].textContent);
+            var schemas = Array.isArray(schema) ? schema : [schema];
+
+            for (var j = 0; j < schemas.length; j++) {
+                if (schemas[j]['@type'] === 'Product' && schemas[j].sku) {
+                    return String(schemas[j].sku).trim();
+                }
+            }
+        } catch (e) {}
+    }
+
+    return null;
+};
+
+// Busca os cards no backend e injeta o HTML na seção
+lastSeenProdService._renderFromBackend = function (ids) {
+    var root = lastSeenProdService._getRoot();
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/ajax/produto.php?act=visitados&ids=' + ids.join(','), true);
+
+    xhr.onload = function () {
+        if (xhr.status !== 200 || !xhr.responseText.trim()) {
+            lastSeenProdService._log('Backend retornou vazio ou erro:', xhr.status);
+            return;
+        }
+
+        root.innerHTML = xhr.responseText;
+        root.style.display = '';
+
+        if (window.lastSeenCarousel && typeof window.lastSeenCarousel.init === 'function') {
+            window.lastSeenCarousel.init(root);
+        }
+    };
+
+    xhr.send();
+};
+
+// Em qualquer página: salva o produto atual. Na home: renderiza o histórico
+lastSeenProdService.init = function () {
+    var currentId = lastSeenProdService._extractProductId();
+
+    if (currentId) {
+        lastSeenProdService.save(currentId);
+    }
+
+    if (!lastSeenProdService._canRun()) return;
+
+    var ids = lastSeenProdService.getIds();
+
+    if (currentId) {
+        ids = ids.filter(function (id) { return id !== String(currentId); });
+    }
+
+    if (!ids.length) return;
+
+    lastSeenProdService._renderFromBackend(ids);
+};
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', lastSeenProdService.init);
+} else {
+    lastSeenProdService.init();
+}

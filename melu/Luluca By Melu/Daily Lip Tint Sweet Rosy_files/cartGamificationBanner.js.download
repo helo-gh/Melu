@@ -1,0 +1,754 @@
+var cartGamificationBanner = [];
+var cartGamificationBannerItems = null;
+
+var CGB_CAROUSEL_INTERVAL_MS = 4000;
+var CGB_VARIANTS = ['', 'OnCart', 'OnProduct', 'OnProductModal'];
+
+var cgbBannersByVariant = {};
+
+function cgbGetEl(selector, parent) {
+	return (parent || document).querySelector(selector);
+}
+
+function cgbGetAllEls(selector, parent) {
+	return (parent || document).querySelectorAll(selector);
+}
+
+function cgbSetText(selector, value) {
+	var element = cgbGetEl(selector);
+	if (element && value !== undefined && value !== null) {
+		element.textContent = value;
+	}
+}
+
+cartGamificationBanner.parseStringToFloat = function (value) {
+	return parseFloat(
+		String(value)
+			.replace(/&nbsp;/g, ' ')
+			.replace('R$ ', '')
+			.replace(/\./g, '')
+			.replace(',', '.')
+	);
+};
+
+cartGamificationBanner.parseStringToInteger = function (value) {
+	return parseInt(
+		String(value).replace('R$ ', '').replace(/\./g, '').replace(',', '.'),
+		10
+	);
+};
+
+cartGamificationBanner.parseFloatToCurrency = function (value) {
+	return value
+		.toLocaleString('pt-br', { style: 'currency', currency: 'BRL' })
+		.replace('R$', '');
+};
+
+cartGamificationBanner.padNumber = function (number) {
+	return number < 10 ? '0' + number : String(number);
+};
+
+cartGamificationBanner.isAppContext = function () {
+	return (
+		window.location.hostname.indexOf('app.') !== -1 ||
+		typeof window.flutter_inappwebview !== 'undefined'
+	);
+};
+
+function cgbShouldShowOnThisContext(banner) {
+	var exibicao = banner.exibicao;
+	if (!exibicao || exibicao === 'ambos') return true;
+	if (exibicao === 'app') return cartGamificationBanner.isAppContext();
+	if (exibicao === 'site') return !cartGamificationBanner.isAppContext();
+	return true;
+}
+
+cartGamificationBanner.encodeCartGamificationBannerName = function (banner) {
+	var decoder = document.createElement('textarea');
+	decoder.innerHTML = banner.nome;
+	banner.nome = decoder.value
+		.normalize('NFD')
+		.replace(/[̀-ͯ]/g, '')
+		.replace(/[^a-z0-9]/gi, '');
+	return banner;
+};
+
+/**
+ * Simula em cima de `subtotal` o efeito de uma regra de pagamento (PIX 10% off,
+ * boleto 5% off, etc.) sem precisar consultar o backend. Permite que o banner
+ * mostre o "preço final" estimado já durante a navegação.
+ *
+ * @param {number} subtotal       Valor base (já em reais, número).
+ * @param {object} regraPagamento Objeto `{ valor, tipo, aplicacao }`:
+ *   - `valor`: número > 0 (porcentagem ou valor fixo)
+ *   - `tipo`: "porcentagem" | "percentual" | "valor"
+ *   - `aplicacao`: "desconto" (subtrai) | "acrescimo" (soma)
+ * @returns {number} O subtotal já com a regra aplicada. Devolve o `subtotal`
+ *                   original quando a regra está mal formada.
+ */
+cartGamificationBanner.aplicarRegraPagamento = function (subtotal, regraPagamento) {
+	if (!regraPagamento || typeof regraPagamento !== 'object') {
+		return subtotal;
+	}
+
+	var fator = parseFloat(regraPagamento.valor);
+	if (isNaN(fator) || fator <= 0) {
+		return subtotal;
+	}
+
+	var tipo = String(regraPagamento.tipo || '').toLowerCase();
+	var aplicacao = String(regraPagamento.aplicacao || 'desconto').toLowerCase();
+	var sinal = aplicacao === 'acrescimo' ? 1 : -1;
+
+	if (tipo === 'porcentagem' || tipo === 'percentual') {
+		return subtotal * (1 + sinal * (fator / 100));
+	}
+
+	return subtotal + sinal * fator;
+};
+
+/**
+ * Lê o JSON do banner que o backend imprimiu dentro do `<div cartGamificationBannerItems…>`.
+ * O backend concatena vários banners separados por vírgula (`{…},{…},`); para virar um
+ * array JSON válido, removemos a vírgula final e embrulhamos em `[ … ]`.
+ *
+ * @param {string} variant Sufixo da variante ("", "OnCart", "OnProduct", "OnProductModal").
+ * @returns {Array<object>|null} Lista de banners parseados, ou null se vazio/inválido.
+ */
+function cgbParseJsonFromContainer(variant) {
+	var container = cgbGetEl('[cartGamificationBannerItems' + variant + ']');
+	if (!container) return null;
+
+	var raw = (container.innerHTML || '').trim();
+	if (!raw) return null;
+
+	if (raw.charAt(raw.length - 1) === ',') {
+		raw = raw.slice(0, -1);
+	}
+
+	try {
+		return JSON.parse('[' + raw + ']');
+	} catch (err) {
+		console.error('cartGamificationBanner: JSON inválido', err);
+		return null;
+	}
+}
+
+cartGamificationBanner.bannerItemHtml = function (banner, element) {
+	var variant = element || '';
+
+	var iconHtml = banner.textoIcone
+		? '<img class="cart-gamification-banner__icon" src="' + banner.textoIcone + '" alt="gamification" />'
+		: '';
+
+	var fontSize = banner.tamanhoDaFonte ? 'font-size: ' + banner.tamanhoDaFonte + ';' : '';
+	var fontWeight = banner.pesoDaFonte ? 'font-weight: ' + banner.pesoDaFonte + ';' : '';
+	var barHeight = banner.tamanhoBarraProgresso ? 'height: ' + banner.tamanhoBarraProgresso + ';' : '';
+	var barPosition = banner.posicaoBarraProgresso ? banner.posicaoBarraProgresso + ': 0;' : '';
+
+	var countdownHtml = '';
+	if (banner.cronometroData && banner.cronometroHora) {
+		countdownHtml =
+			'<span class="cart-gamification-banner__countdown" ' +
+				'cartGamificationBannerCountdown' + variant + ' ' +
+				'data-date="' + banner.cronometroData + '" ' +
+				'data-time="' + banner.cronometroHora + '">' +
+			'</span>';
+	}
+
+	var progressStyle = banner.imagemDoProgresso
+		? "background-image: url('" + banner.imagemDoProgresso + "');"
+		: 'background: ' + (banner.corDoProgresso || 'transparent') + ';';
+
+	var initialStyle = banner.corDoFundo
+		? 'background: ' + banner.corDoFundo + ';'
+		: "background-image: url('" + (banner.imagemDeFundo || '') + "');";
+
+	return (
+		'<div class="cart-gamification-banner__item" cartGamificationBannerName' + variant + '=' + banner.nome + '>' +
+			'<div class="cart-gamification-banner__text" style="color: ' + (banner.corDaFonte || '') + '; ' + fontSize + ' ' + fontWeight + '">' +
+				iconHtml +
+				'<span cartGamificationBannerText' + variant + '>' + banner.textoInicial + '</span>' +
+				countdownHtml +
+			'</div>' +
+			'<div class="cart-gamification-banner__progress-background" ' +
+				'style="' + progressStyle + ' width: 0%; ' + barHeight + ' ' + barPosition + '" ' +
+				'cartGamificationBannerProgress' + variant + '></div>' +
+			'<div class="cart-gamification-banner__initial-background" style="' + initialStyle + '"></div>' +
+		'</div>'
+	);
+};
+
+cartGamificationBanner.generateBanners = function (element) {
+	var variant = element || '';
+
+	var parsedFromDom = cgbParseJsonFromContainer(variant);
+	if (parsedFromDom) {
+		cgbBannersByVariant[variant] = parsedFromDom;
+		if (variant === '') {
+			cartGamificationBannerItems = parsedFromDom;
+		}
+	}
+
+	var banners = cgbBannersByVariant[variant];
+	if (!banners || !banners.length) {
+		return;
+	}
+
+	var html = '';
+	for (var i = 0; i < banners.length; i++) {
+		var banner = banners[i];
+		if (!cgbShouldShowOnThisContext(banner)) continue;
+
+		banner = cartGamificationBanner.encodeCartGamificationBannerName(banner);
+		html += cartGamificationBanner.bannerItemHtml(banner, variant);
+	}
+
+	var container = cgbGetEl('[cartGamificationBannerContainer' + variant + ']');
+	if (!container) return;
+
+	container.innerHTML = html;
+	container.classList.add('cart-gamification-banner__active');
+
+	cartGamificationBanner.initializeCarousel(variant);
+	cartGamificationBanner.initCountdowns(variant);
+
+	if (typeof cart !== 'undefined' && cart.subtotal !== undefined) {
+		cartGamificationBanner.calculateBannerProgressBarOnCheckout(variant);
+	} else {
+		cartGamificationBanner.calculateBannerProgressBar(variant);
+	}
+};
+
+cartGamificationBanner.initializeCarousel = function (element) {
+	var variant = element || '';
+	var bannerItems = cgbGetAllEls('[cartGamificationBannerName' + variant + ']');
+
+	if (bannerItems.length < 2) return;
+
+	var firstItem = bannerItems[0];
+	var itemHeight = firstItem.offsetHeight;
+	var currentIndex = 0;
+	var totalItems = bannerItems.length;
+
+	setInterval(function () {
+		currentIndex = (currentIndex + 1) % totalItems;
+		firstItem.style.marginTop = '-' + currentIndex * itemHeight + 'px';
+	}, CGB_CAROUSEL_INTERVAL_MS);
+};
+
+cartGamificationBanner.parseCronometroDate = function (dateStr, timeStr) {
+	var dateParts = String(dateStr).split('/');
+	var timeParts = String(timeStr).split(':');
+	if (dateParts.length !== 3 || timeParts.length !== 3) return null;
+
+	var targetDate = new Date(
+		+dateParts[2], +dateParts[1] - 1, +dateParts[0],
+		+timeParts[0], +timeParts[1], +timeParts[2]
+	);
+	return isNaN(targetDate.getTime()) ? null : targetDate;
+};
+
+cartGamificationBanner.initCountdowns = function (element) {
+	var variant = element || '';
+	var countdownEls = cgbGetAllEls('[cartGamificationBannerCountdown' + variant + ']');
+
+	for (var i = 0; i < countdownEls.length; i++) {
+		cartGamificationBanner.bindCountdown(countdownEls[i]);
+	}
+};
+
+cartGamificationBanner.bindCountdown = function (countdownEl) {
+	var targetDate = cartGamificationBanner.parseCronometroDate(
+		countdownEl.getAttribute('data-date'),
+		countdownEl.getAttribute('data-time')
+	);
+	if (!targetDate) return;
+
+	if (!cartGamificationBanner.tickCountdown(countdownEl, targetDate)) return;
+
+	var intervalId = setInterval(function () {
+		if (!cartGamificationBanner.tickCountdown(countdownEl, targetDate)) {
+			clearInterval(intervalId);
+		}
+	}, 1000);
+};
+
+/**
+ * Renderiza um "tick" do cronômetro regressivo no `countdownEl`. Chamada a cada
+ * segundo pelo `bindCountdown`. Cobre 3 estados visuais:
+ *
+ *   - **Tempo restante > 60s** — renderiza `dd:hh:mm:ss`, sem destaque.
+ *   - **Tempo restante ≤ 60s** — adiciona a classe `--urgent` (CSS pulsa a barra).
+ *   - **Expirado (≤ 0)** — adiciona `--expired` no `.cart-gamification-banner__item` pai
+ *     (CSS esconde o item inteiro) e devolve `false` pro caller parar o `setInterval`.
+ *
+ * @param {Element} countdownEl  O `<span>` que recebe o markup do tempo.
+ * @param {Date}    targetDate   Data-alvo do cronômetro.
+ * @returns {boolean} `true` enquanto o cronômetro deve continuar; `false` ao expirar.
+ */
+cartGamificationBanner.tickCountdown = function (countdownEl, targetDate) {
+	var remainingMs = targetDate.getTime() - Date.now();
+
+	if (remainingMs <= 0) {
+		var bannerItem = countdownEl.closest('.cart-gamification-banner__item');
+		if (bannerItem) {
+			bannerItem.classList.add('cart-gamification-banner__item--expired');
+		}
+		countdownEl.innerHTML = '';
+		return false;
+	}
+
+	var totalSeconds = Math.floor(remainingMs / 1000);
+	var days = Math.floor(totalSeconds / 86400);
+	var hours = Math.floor((totalSeconds % 86400) / 3600);
+	var minutes = Math.floor((totalSeconds % 3600) / 60);
+	var seconds = totalSeconds % 60;
+	var pad = cartGamificationBanner.padNumber;
+
+	if (totalSeconds <= 60) {
+		countdownEl.classList.add('cart-gamification-banner__countdown--urgent');
+	} else {
+		countdownEl.classList.remove('cart-gamification-banner__countdown--urgent');
+	}
+
+	var html = '';
+	if (days > 0) {
+		html += cartGamificationBanner.renderCountdownBlock(days, 'd');
+		html += cartGamificationBanner.renderCountdownSeparator();
+	}
+	html += cartGamificationBanner.renderCountdownBlock(pad(hours), 'h');
+	html += cartGamificationBanner.renderCountdownSeparator();
+	html += cartGamificationBanner.renderCountdownBlock(pad(minutes), 'm');
+	html += cartGamificationBanner.renderCountdownSeparator();
+	html += cartGamificationBanner.renderCountdownBlock(pad(seconds), 's');
+
+	countdownEl.innerHTML = html;
+	return true;
+};
+
+cartGamificationBanner.renderCountdownBlock = function (value, label) {
+	return (
+		'<span class="cgb-countdown__block">' +
+			'<span class="cgb-countdown__value">' + value + '</span>' +
+			'<span class="cgb-countdown__label">' + label + '</span>' +
+		'</span>'
+	);
+};
+
+cartGamificationBanner.renderCountdownSeparator = function () {
+	return '<span class="cgb-countdown__sep">:</span>';
+};
+
+cartGamificationBanner.calculateBannerProgressBar = function (element) {
+	var variant = element || '';
+
+	var banners = cgbBannersByVariant[variant];
+	if (!banners || !banners.length) return;
+
+	for (var i = 0; i < banners.length; i++) {
+		cgbUpdateBannerItem(banners[i], variant);
+	}
+};
+
+function cgbUpdateBannerItem(banner, variant) {
+	var cartValues = cgbReadCartValues(banner, variant);
+	if (!cartValues) return;
+
+	if (banner.regraPagamento && banner.regra !== 'itens') {
+		cartValues.cartValue = cartGamificationBanner.aplicarRegraPagamento(
+			cartValues.cartValue,
+			banner.regraPagamento
+		);
+	}
+
+	var bannerEl = cgbGetEl('[cartGamificationBannerName' + variant + '=' + banner.nome + ']');
+	if (!bannerEl) return;
+
+	var visualState = cgbComputeVisual(banner, cartValues, variant);
+	cgbApplyVisual(bannerEl, banner, visualState, variant);
+}
+
+/**
+ * Lê do DOM os valores do carrinho que esse banner precisa para o cálculo.
+ * O conjunto de valores muda conforme a `regra`:
+ *
+ *   - `'itens'`            → contagem inteira (quantos itens vs quantos faltam)
+ *   - `'maior+itens'`      → subtotal monetário + contagem de itens (precisa dos dois)
+ *   - demais regras        → apenas subtotal monetário
+ *
+ * Devolve `null` se algum dado obrigatório não estiver no DOM, para que o caller
+ * pule esse banner sem renderizar nada incorreto.
+ *
+ * @param {object} banner   Configuração do banner vinda do JSON.
+ * @param {string} variant  Sufixo da variante para montar o seletor.
+ * @returns {object|null}   `{ cartValue, expectedValue, cartItemsValue?, expectedItemsValue? }` ou null.
+ */
+function cgbReadCartValues(banner, variant) {
+	var valueEl = cgbGetEl('[cartGamification' + variant + banner.atributo + ']');
+	if (!valueEl) return null;
+
+	var rawValue = valueEl.innerHTML;
+	if (rawValue === undefined) return null;
+
+	if (banner.regra === 'itens') {
+		return {
+			cartValue: cartGamificationBanner.parseStringToInteger(rawValue),
+			expectedValue: cartGamificationBanner.parseStringToInteger(banner.valorDesejado)
+		};
+	}
+
+	if (banner.regra === 'maior+itens') {
+		var itemsEl = cgbGetEl('[cartGamification' + variant + 'Itens]');
+		var rawItems = itemsEl ? itemsEl.innerHTML : undefined;
+		if (rawItems === undefined || banner.valorItensDesejado === undefined) return null;
+
+		return {
+			cartValue: cartGamificationBanner.parseStringToFloat(rawValue),
+			expectedValue: cartGamificationBanner.parseStringToFloat(banner.valorDesejado),
+			cartItemsValue: cartGamificationBanner.parseStringToInteger(rawItems),
+			expectedItemsValue: cartGamificationBanner.parseStringToInteger(banner.valorItensDesejado)
+		};
+	}
+
+	return {
+		cartValue: cartGamificationBanner.parseStringToFloat(rawValue),
+		expectedValue: cartGamificationBanner.parseStringToFloat(banner.valorDesejado)
+	};
+}
+
+/**
+ * Função pura que decide texto, largura e estado de "concluído" para um banner,
+ * sem tocar no DOM. Quem aplica o resultado é o `cgbApplyVisual` depois. Trabalha em 3 etapas:
+ *
+ *   1. **Carrinho vazio** (`cartValue <= 0`) → mostra `textoInicial` e barra 0%.
+ *   2. **Regra aplicada** (`cgbApplyRule`) → calcula percentual e quanto falta.
+ *   3. **Substituição de placeholders** → `{value}` (valor faltante em BRL),
+ *      `{items}` (qtde faltante), `{discount}` (cálculo entre preço por/original).
+ *
+ * Também faz o override "cliente bonificado por tabela de preço automática":
+ * mesmo sem bater a meta, marca como concluído quando o flag está ativo.
+ *
+ * @param {object} banner      Banner do JSON.
+ * @param {object} cartValues  Saída de `cgbReadCartValues`.
+ * @param {string} variant     Sufixo da variante.
+ * @returns {{text: string, width: string, finish: boolean}}
+ */
+function cgbComputeVisual(banner, cartValues, variant) {
+	var fontSize = banner.tamanhoDaFonte ? 'font-size: ' + banner.tamanhoDaFonte + ';' : '';
+	var fontWeight = banner.pesoDaFonte ? 'font-weight: ' + banner.pesoDaFonte + ';' : '';
+	var finishText = banner.linkResultado
+		? '<a href="' + banner.linkResultado + '" style="' + fontSize + ' ' + fontWeight + '">' + banner.textoResultado + '</a>'
+		: banner.textoResultado;
+
+	if (cartValues.cartValue <= 0) {
+		var initialText = banner.textoInicial;
+		if ((banner.regra || '').trim() === 'maior+itens') {
+			initialText = initialText.replace('{items}', cartValues.expectedItemsValue);
+		}
+		initialText = initialText.replace('{value}', banner.valorDesejado);
+		return { text: initialText, width: '0%', finish: false };
+	}
+
+	var ruleResult = cgbApplyRule(banner.regra, cartValues);
+
+	if (banner.atributo === 'precoportabeladeprecoautomatica') {
+		var bonusFlagEl = cgbGetEl('[cartGamification' + variant + 'ClienteBonificadoTabelaDePrecoAutomatica]');
+		if (bonusFlagEl && bonusFlagEl.innerHTML === 'true') {
+			ruleResult.finish = true;
+			ruleResult.width = '100%';
+		}
+	}
+
+	var text = ruleResult.finish ? finishText : banner.textoAndamento;
+
+	if (
+		banner.atributo === 'precopororiginal' ||
+		banner.atributo === 'precoportabeladeprecoautomatica'
+	) {
+		var currentPriceEl = cgbGetEl('[cartGamification' + variant + 'PrecoPorTabelaDePrecoAutomatica]');
+		var originalPriceEl = cgbGetEl('[cartGamification' + variant + 'PrecoPorOriginal]');
+		if (currentPriceEl && originalPriceEl) {
+			var currentPrice = cartGamificationBanner.parseStringToFloat(currentPriceEl.innerHTML);
+			var originalPrice = cartGamificationBanner.parseStringToFloat(originalPriceEl.innerHTML);
+			text = text.replace('{discount}', cartGamificationBanner.parseFloatToCurrency(originalPrice - currentPrice));
+		}
+	}
+
+	if (!ruleResult.finish) {
+		var missingLabel = banner.atributo === 'itens'
+			? ruleResult.missingValue
+			: cartGamificationBanner.parseFloatToCurrency(ruleResult.missingValue);
+
+		if (banner.regra === 'maior+itens') {
+			text = text.replace('{items}', ruleResult.missingItems);
+		}
+		text = text.replace('{value}', missingLabel);
+	}
+
+	return { text: text, width: ruleResult.width, finish: ruleResult.finish };
+}
+
+/**
+ * Aplica a regra (`maior`, `menor`, `maior+itens` ou default) e devolve quanto
+ * falta + qual a largura percentual da barra.
+ *
+ *   - `maior`        → atinge meta quando subtotal ≥ valorDesejado
+ *   - `menor`        → atinge meta quando subtotal ≤ valorDesejado (ex.: desafio inverso)
+ *   - `maior+itens`  → precisa bater AMBOS subtotal E contagem; o percentual usa o mais distante
+ *   - default        → mesma lógica de `maior`
+ *
+ * @param {string} rule        Identificador da regra.
+ * @param {object} cartValues  Valores lidos do DOM (`cartValue`, `expectedValue`, etc.).
+ * @returns {{finish: boolean, width: string, missingValue?: number, missingItems?: number}}
+ */
+function cgbApplyRule(rule, cartValues) {
+	var cartValue = cartValues.cartValue;
+	var expected = cartValues.expectedValue;
+	var cartItems = cartValues.cartItemsValue;
+	var expectedItems = cartValues.expectedItemsValue;
+
+	if (rule === 'maior') {
+		if (cartValue >= expected) return { finish: true, width: '100%' };
+		return {
+			finish: false,
+			width: ((cartValue * 100) / expected) + '%',
+			missingValue: expected - cartValue
+		};
+	}
+
+	if (rule === 'menor') {
+		if (cartValue <= expected) return { finish: true, width: '100%' };
+		return {
+			finish: false,
+			width: ((expected * 100) / cartValue) + '%',
+			missingValue: cartValue - expected
+		};
+	}
+
+	if (rule === 'maior+itens') {
+		if (cartValue >= expected && cartItems >= expectedItems) {
+			return { finish: true, width: '100%' };
+		}
+		var missingValue = Math.max(expected - cartValue, 0);
+		var missingItems = Math.max(expectedItems - cartItems, 0);
+		var percent = missingValue > 0
+			? (cartValue * 100) / expected
+			: (cartItems * 100) / expectedItems;
+		return {
+			finish: false,
+			width: percent + '%',
+			missingValue: missingValue,
+			missingItems: missingItems
+		};
+	}
+
+	if (cartValue >= expected) return { finish: true, width: '100%' };
+	return {
+		finish: false,
+		width: ((cartValue * 100) / expected) + '%',
+		missingValue: expected - cartValue
+	};
+}
+
+function cgbApplyVisual(bannerEl, banner, visualState, variant) {
+	var textEl = cgbGetEl('[cartGamificationBannerText' + variant + ']', bannerEl);
+	var progressEl = cgbGetEl('[cartGamificationBannerProgress' + variant + ']', bannerEl);
+	var contentEl = cgbGetEl('.cart-gamification-banner__text', bannerEl);
+
+	if (textEl) textEl.innerHTML = visualState.text;
+	if (progressEl) progressEl.style.width = visualState.width;
+
+	var resultEnableEl = cgbGetEl('[cartGamification' + variant + 'ResultEnable]', bannerEl);
+	if (resultEnableEl && resultEnableEl.value === 'true') {
+		visualState.finish = true;
+	}
+
+	if (progressEl) {
+		cgbPaintProgressBar(progressEl, banner, visualState.finish);
+	}
+
+	if (contentEl) {
+		var color = visualState.finish && banner.corDaFonteResultado
+			? banner.corDaFonteResultado
+			: banner.corDaFonte;
+		if (color) {
+			contentEl.style.color = color;
+			if (banner.linkResultado) {
+				var linkEl = cgbGetEl('a', contentEl);
+				if (linkEl) linkEl.style.color = color;
+			}
+		}
+	}
+}
+
+function cgbPaintProgressBar(progressEl, banner, finish) {
+	var hasFinishStyle = finish &&
+		((banner.imagemDoResultado && banner.imagemDoResultado !== '') ||
+		 (banner.corDoResultado && banner.corDoResultado !== ''));
+
+	if (hasFinishStyle) {
+		if (banner.imagemDoResultado) {
+			progressEl.style.backgroundImage = "url('" + banner.imagemDoResultado + "')";
+		} else {
+			progressEl.style.backgroundColor = banner.corDoResultado;
+		}
+		if (banner.tamanhoBarraProgressoResultado) {
+			progressEl.style.height = banner.tamanhoBarraProgressoResultado;
+		}
+		return;
+	}
+
+	if (banner.imagemDoProgresso) {
+		progressEl.style.backgroundImage = "url('" + banner.imagemDoProgresso + "')";
+	} else if (banner.corDoProgresso) {
+		progressEl.style.backgroundColor = banner.corDoProgresso;
+	}
+	if (banner.tamanhoBarraProgresso) {
+		progressEl.style.height = banner.tamanhoBarraProgresso;
+	}
+	if (banner.corDaFonte) {
+		progressEl.style.color = banner.corDaFonte;
+	}
+}
+
+cartGamificationBanner.calculateBannerProgressBarOnCheckout = function (element) {
+	var variant = element || '';
+
+	if (typeof cart === 'undefined') {
+		cartGamificationBanner.calculateBannerProgressBar(variant);
+		return;
+	}
+
+	cgbSetText('[cartGamification' + variant + 'PrecoDe]', cart.subtotalDe);
+	cgbSetText('[cartGamification' + variant + 'PrecoPor]', cart.subtotal);
+	cgbSetText('[cartGamification' + variant + 'PrecoPorOriginal]', cart.subtotalPorOriginal);
+	cgbSetText('[cartGamification' + variant + 'PrecoPorTabelaDePrecoAutomatica]', cart.subtotalPorTabelaDePrecoAutomatica);
+	cgbSetText('[cartGamification' + variant + 'ClienteBonificadoTabelaDePrecoAutomatica]', cart.customerEnableForAutomaticPricingTable);
+	cgbSetText('[cartGamification' + variant + 'Itens]', cart.totalItemsQuantity);
+	cgbSetText('[cartGamification' + variant + 'PrecoComRegraPagamento]', cart.subtotalCalculado);
+
+	cartGamificationBanner.calculateBannerProgressBar(variant);
+};
+
+function cgbDetectActiveVariants() {
+	var activeVariants = [];
+	for (var i = 0; i < CGB_VARIANTS.length; i++) {
+		if (cgbGetEl('[cartGamificationBannerContainer' + CGB_VARIANTS[i] + ']')) {
+			activeVariants.push(CGB_VARIANTS[i]);
+		}
+	}
+	return activeVariants;
+}
+
+// Flag evita loop: o recalc escreve nos spans observados; libera em microtask
+// pra ignorar os MutationRecords gerados pelas próprias escritas.
+var cgbRecalcInProgress = false;
+
+function cgbRecalcAllVariants() {
+	if (cgbRecalcInProgress) return;
+	cgbRecalcInProgress = true;
+
+	try {
+		var activeVariants = cgbDetectActiveVariants();
+		for (var i = 0; i < activeVariants.length; i++) {
+			cartGamificationBanner.calculateBannerProgressBarOnCheckout(activeVariants[i]);
+		}
+	} finally {
+		Promise.resolve().then(function () {
+			cgbRecalcInProgress = false;
+		});
+	}
+}
+
+function cgbObserveBannerVisibility() {
+	if (typeof IntersectionObserver !== 'function') return;
+
+	var containers = [];
+	for (var i = 0; i < CGB_VARIANTS.length; i++) {
+		var container = cgbGetEl('[cartGamificationBannerContainer' + CGB_VARIANTS[i] + ']');
+		if (container) containers.push(container);
+	}
+	if (!containers.length) return;
+
+	var observer = new IntersectionObserver(function (entries) {
+		for (var i = 0; i < entries.length; i++) {
+			if (!entries[i].isIntersecting) continue;
+			observer.unobserve(entries[i].target);
+			cgbRecalcAllVariants();
+		}
+	}, { threshold: 0.01 });
+
+	for (var j = 0; j < containers.length; j++) {
+		observer.observe(containers[j]);
+	}
+}
+
+/**
+ * Observa mudanças no texto dos `<span>` ocultos alimentados pelo cart.js
+ * (subtotal, contagem de itens, etc.). Sempre que o backend atualiza esses
+ * valores — após add/remove de item ou após troca da forma de pagamento — o
+ * MutationObserver dispara o recálculo do banner.
+ *
+ * Em vez de escutar um evento custom (que dependeria de biblioteca externa),
+ * observamos o resultado dele no DOM. Este é o sinal natural e independente.
+ */
+function cgbObserveCartSpans() {
+	if (typeof MutationObserver !== 'function') return;
+
+	var watchedSpans = [];
+	var watchedAttrs = [
+		'PrecoPor',
+		'PrecoDe',
+		'PrecoPorOriginal',
+		'PrecoPorTabelaDePrecoAutomatica',
+		'PrecoComRegraPagamento',
+		'Itens',
+	];
+
+	for (var v = 0; v < CGB_VARIANTS.length; v++) {
+		for (var a = 0; a < watchedAttrs.length; a++) {
+			var spanEl = cgbGetEl('[cartGamification' + CGB_VARIANTS[v] + watchedAttrs[a] + ']');
+			if (spanEl) watchedSpans.push(spanEl);
+		}
+	}
+	if (!watchedSpans.length) return;
+
+	var observer = new MutationObserver(cgbRecalcAllVariants);
+	for (var i = 0; i < watchedSpans.length; i++) {
+		observer.observe(watchedSpans[i], { childList: true, characterData: true, subtree: true });
+	}
+}
+
+function cgbInit() {
+	for (var i = 0; i < CGB_VARIANTS.length; i++) {
+		var variant = CGB_VARIANTS[i];
+		if (cgbGetEl('[cartGamificationBannerItems' + variant + ']')) {
+			cartGamificationBanner.generateBanners(variant);
+		}
+	}
+
+	document.addEventListener('change', function (event) {
+		var target = event.target;
+		if (!target) return;
+		if (target.id === 'cart-items' || (target.closest && target.closest('#cart-items'))) {
+			cgbRecalcAllVariants();
+		}
+	});
+
+	cgbObserveBannerVisibility();
+	cgbObserveCartSpans();
+
+	cgbRecalcAllVariants();
+	setTimeout(function () {
+		if (typeof cart !== 'undefined' && cart.subtotalValue > 0) {
+			cgbRecalcAllVariants();
+		}
+	}, 600);
+}
+
+if (document.readyState === 'loading') {
+	document.addEventListener('DOMContentLoaded', cgbInit);
+} else {
+	cgbInit();
+}

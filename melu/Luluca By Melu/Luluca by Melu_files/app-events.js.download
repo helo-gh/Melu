@@ -1,0 +1,86 @@
+if (typeof appEvents == "undefined") {
+    appEvents = [];
+    appEvents.isReady = false;
+}
+
+appEvents.googleAnalyticsEvents = (event = 'view_item', params = {}, ga4 = true) => {
+    if (!appEvents.isReady) {
+        return; 
+    }
+
+    window.flutter_inappwebview.callHandler('googleAnalytics', {
+        referer: window.location.pathname,
+        event: event,
+        params: params,
+        page_name: document.title,
+        ga4: ga4
+    });
+}
+
+appEvents.setPageType = () => {
+    if (!appEvents.isReady) {
+        return; 
+    }
+
+    if (typeof window.flutter_inappwebview === 'undefined') {
+        return;
+    }
+
+    const pageType = document.querySelector('.page-type');
+
+    if (!pageType) {
+        return;
+    }
+
+    window.flutter_inappwebview.callHandler('pageType', parseInt(pageType.value));
+}
+
+appEvents.setSessionInfos = () => {
+    let quantity = 0;
+    let user = null;
+
+    if (typeof window.flutter_inappwebview === 'undefined') {
+        return;
+    }
+
+    if (typeof appElements != 'undefined') {
+        const quantityEl = document.querySelector(appElements?.quantity);
+        quantity = quantityEl ? parseInt(quantityEl.innerText) : 0;
+
+        const name = document.querySelector(appElements?.name);
+        const email = document.querySelector(appElements?.email);
+
+        if (name && email) {
+            user = {
+                pessoa: {
+                    nome: name.innerText.trim(),
+                    email: email.innerText.trim()
+                }
+            }
+        }
+    }
+
+    window.flutter_inappwebview.callHandler('sessionInfos', {
+        cartLength: quantity,
+        user: user
+    });
+}
+
+appEvents.initialize = () => {
+    appEvents.isReady = true;
+
+    const event = new Event('ajaxcache.needupdate');
+    document.dispatchEvent(event);
+
+    if (typeof demo !== 'undefined') {
+        demo.updateCart();
+    } else {
+        appEvents.setSessionInfos();
+    }
+
+    appEvents.setPageType();
+}
+
+window.addEventListener('flutterInAppWebViewPlatformReady', function () {
+    appEvents.initialize();
+});

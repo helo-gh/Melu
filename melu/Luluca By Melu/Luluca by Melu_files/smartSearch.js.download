@@ -1,0 +1,285 @@
+let searchConfigurations = {
+    inputAttribute: 'smartsearchinput',
+    containerResponseAttribute: 'smartsearchcontainer',
+    searchResponseTerm: 'smartsearchresponse',
+    searchListAttribute: 'smartsearchitems',
+    searchItemAttribute: 'smartsearchlistitem',
+    searchItemDataAttribute: 'smartsearchlistdata',
+    searchDetailsAttribute: 'smartsearchdetails',
+    searchDataAttribute: 'smartsearchdata',
+    cssContainer: 'smart-search',
+    minimumCharacteres: 3,
+    loading: false,
+    timeoutPaused: 1000,
+    searchInputBlocked: false
+};
+
+const executeSearch = async (searchTerm) => {
+    const url = document.querySelector("#urlajax").value;
+    const filter = window.innerWidth > 991 ? '5' : '4';
+    let result = '';
+
+    result = await fetch(`${url}/produto.php?act=resultadoPesquisa&name=${searchTerm}&style=mobileU&limit=${filter}`)
+        .then(response => {
+            return response.json();
+        })
+        .then((data) => {
+            return data;
+        })
+        .catch(error => {
+            console.error(error);
+        });
+
+    return result;
+};
+
+const initializeSmartSearch = () => {
+    let searchInputs = document.querySelectorAll(`[${searchConfigurations.inputAttribute}]`);
+
+    searchInputs.forEach((item => {
+        let searchAttribute = item.getAttribute(searchConfigurations.inputAttribute);
+
+        let containerAttribute = `[${searchConfigurations.containerResponseAttribute}=${searchAttribute}]`;
+        let searchContainer = document.querySelector(containerAttribute);
+        let container = document.querySelector(containerAttribute);
+
+        item.addEventListener('mouseenter', data => {
+            let termSearched = searchContainer.getAttribute(searchConfigurations.searchResponseTerm);
+            let searchValue = data.target.value;
+
+            if (searchValue && termSearched == searchValue) {
+                container.classList.add(`${searchConfigurations.cssContainer}--open`);
+            }
+        });
+
+        let searchTimeout = null;
+        let keyUpTime = null;
+
+        item.addEventListener('keyup', data => {
+            let searchValue = data.target.value;
+            keyUpTime = new Date().getTime();
+
+            container.classList.remove(`${searchConfigurations.cssContainer}--open`);
+
+            if (searchValue.length < searchConfigurations.minimumCharacteres) {
+                return;
+            }
+
+            if (searchConfigurations.loading) {
+                return;
+            }
+
+            if (searchTimeout != null) {
+                clearTimeout(searchTimeout);
+            }
+
+            searchtTimeout = setTimeout(() => {
+                if (new Date(keyUpTime + 1000).getTime() > new Date().getTime()) {
+                    return;
+                }
+
+                searchConfigurations.loading = true;
+                toggleSearchInputBlock(item);
+
+                let json = executeSearch(searchValue);
+
+                json.then(data => {
+                    searchContainer.setAttribute(searchConfigurations.searchResponseTerm, searchValue);
+                    showSearchResponse(item, data);
+                })
+                .catch(error => {
+                    console.error(error);
+                    return;
+                });
+
+                searchConfigurations.loading = false;
+            }, searchConfigurations.timeoutPaused);
+        });
+    }));
+};
+const toggleSearchInputBlock = (input) => {
+    if (!searchConfigurations.searchInputBlocked) {
+        input.setAttribute("readonly", "true");
+    } else {
+        input.removeAttribute("readonly");
+    }
+
+    searchConfigurations.searchInputBlocked = !searchConfigurations.searchInputBlocked;
+} 
+
+const showSearchResponse = (input, json) => {
+    if (!json) {
+        toggleSearchInputBlock(input);
+        return;
+    }
+
+    const attribute = input.getAttribute(searchConfigurations.inputAttribute);
+
+    const containerAttribute = `[${searchConfigurations.containerResponseAttribute}="${attribute}"]`;
+    let container = document.querySelector(containerAttribute);
+
+    const searchListAttribute = `[${searchConfigurations.searchListAttribute}="${attribute}"]`;
+    let searchListContainer = document.querySelector(searchListAttribute);
+
+    const searchDataAttribute = `[${searchConfigurations.searchDataAttribute}="${attribute}"]`;
+    let searchDataContainer = document.querySelector(searchDataAttribute);
+
+    let list = '';
+    let data = '';
+    
+    json.map((item) => {
+        list += getSearchItemsHtml(item);
+        data += getSearchDataHtml(item);
+    });
+
+    if (!list || !data) {
+        toggleSearchInputBlock(input);
+        return;
+    }
+
+    searchListContainer.innerHTML = list;
+    searchDataContainer.innerHTML = data;
+
+    container.classList.add(`${searchConfigurations.cssContainer}--open`);
+
+    toggleSearchInputBlock(input);
+    addHoverOnListItems(input);
+
+    let header = document.querySelector('header');
+
+    header.addEventListener('mouseleave', () => {
+        container.classList.remove(`${searchConfigurations.cssContainer}--open`);
+    });
+
+    container.addEventListener('mouseleave', () => {
+        container.classList.remove(`${searchConfigurations.cssContainer}--open`);
+    });
+}
+
+const addHoverOnListItems = (input) => {
+    const attribute = input.getAttribute(searchConfigurations.inputAttribute);
+    const items = document.querySelectorAll(`[${searchConfigurations.searchItemAttribute}]`);
+    const detailsContainer = document.querySelector(`[${searchConfigurations.searchDetailsAttribute}="${attribute}"]`);
+
+    items.forEach(item => {
+        item.addEventListener('mouseenter', data => {
+            let item = data.target;
+            let id = item.getAttribute(searchConfigurations.searchItemAttribute);
+
+            let dataItem = document.querySelector(`[${searchConfigurations.searchItemDataAttribute}="${id}"]`);
+
+            if (dataItem) {
+                detailsContainer.innerHTML = dataItem.innerHTML;
+            }
+        });
+    });
+}
+
+const getSearchItemsHtml = (item) => {
+    let url = document.querySelector("#urlsite").value;
+    let image = item.midia ? item.midia : `${url}/static/img/semimagem.png`;
+
+    let html = `
+        <a class="smart-search__item" href="${url}/produto/${item.label}" smartsearchlistitem="${item.label}">
+            <img class="smart-search__item__image" src="${image}"/>
+            <div class="smart-search__item__info">
+                <div class="smart-search__item__name">${item.name}</div>
+                <div class="smart-search__item__reference">(SKU: ${item.codigo})</div>
+            </div>
+            <div class="smart-search__item__price">${item.preco}</div>
+        </a>
+    `;
+    
+    return html;
+}
+
+const getSearchDataHtml = (item) => {
+    let url = document.querySelector("#urlsite").value;
+    let image = item.midia ? item.midia.replace('thumb', 'zoom') : `${url}/static/img/semimagem.png`;
+
+    let html = `
+        <div class="smart-search__data" smartsearchlistdata="${item.label}">
+            <img class="smart-search__details__image" src="${image}" />
+            <h3 class="smart-search__details__name">${item.name}</h3>
+            <div class="smart-search__details__reference">${item.codigo}</div>
+            <span class="smart-search__details__price">${item.preco}</span>
+            <div class="smart-search__details__description">
+                ${item.descricao}
+            </div>
+            <div class="smart=search__buy-container">
+                ${getBuyButton(item)}
+            </div>
+        </div>
+    `;
+
+    return html;
+}
+
+const getOutOfStockHtml = (item) => {
+    let url = document.querySelector("#urlsite").value;
+
+    return `
+        <a href="${url}/ajax/produto.php?act=avisodisponiveltodasunidades&id=${item.label}" class="ajaxlink">
+            <button class="new-product-inner__thumb__buy new-product-inner__thumb__buy--disable" type="disabled" data-loading-text="Carregando...">
+                Me avise
+            </button>
+        </a>
+    `;
+}
+
+const getFastBuyHtml = (item) => {
+    let url = document.querySelector("#urlsite").value;
+
+    return `
+        <form class="ajaxform" action="${url}/ajax/produto.php">
+            <input type="hidden" name="act" value="comprarapida">
+            <input type="hidden" name="id" value="${item.label}">
+            <button class="new-product-inner__thumb__buy" type="submit" data-loading-text="Carregando..." data-add-product-to-cart>
+                Comprar
+            </button>
+            <button class="new-product-inner__thumb__buy new-product-inner__thumb__buy--mobile" type="submit" data-loading-text="Carregando..." data-add-product-to-cart>
+                Comprar
+            </button>
+        </form>
+    `;
+}
+
+const getBuyWithQuantityHtml = (item) => {
+    let url = document.querySelector("#urlsite").value;
+
+    return `
+        <form class="ajaxform" action="${url}/ajax/produto.php">
+            <input type="hidden" name="act" value="comprarapida">
+            <input type="hidden" name="id" value="${item.label}">
+            <input type="hidden" name="uniqUnit" value="1">
+
+            <div class="new-product-inner__thumb__buy-container__quantity new-product-inner__thumb__buy-container__quantity--1">
+                <div class="quantity-adder no-select text-center">
+                    <span class="add-down add-action no-select">-</span>
+                    <input type="text" name="quantity" value="1" size="2" data-max="${item.unidades[0].estoque}" class="quantity new-product-inner__thumb__buy-container__input">
+                    <span class="add-up add-action no-select">+</span>
+                </div>
+            </div>
+            <button class="product-data__buy-button-container__buy" type="button" data-loading-text="Carregando..." data-submit>
+                <span class="product-data__buy-button-container__text">Comprar</span>
+            </button>
+        </form>
+    `;
+}
+
+const getBuyButton = (item) => {
+    console.log(item);
+    if (item.unidades.length > 1 && item.unidades.length != 0) {
+        return getFastBuyHtml(item);
+    }
+
+    if (item.unidades.length == 0 || item.unidades[0].estoque == 0) {
+        return getOutOfStockHtml(item);
+    }
+
+    return getBuyWithQuantityHtml(item);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    initializeSmartSearch();
+});

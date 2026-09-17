@@ -1,0 +1,151 @@
+if (typeof whatsappButtonService === "undefined") {
+    whatsappButtonService = [];
+    whatsappButtonService.useDefaultButton = true;
+}
+
+whatsappButtonService.getWhatsappButton = () => {
+    if (typeof WhWidgetSendButton !== "undefined") {
+        whatsappButtonService.useDefaultButton = true;
+        return;
+    }
+
+    whatsappButtonService.useDefaultButton = false;
+
+    const numberEl = document.querySelector(".whatsappbuttonnumber");
+    const positionEl = document.querySelector(".whatsappbuttonposition");
+
+    if (!numberEl || !positionEl) return;
+
+    const rawInput = (numberEl.value || "").trim();
+    const rawPosition = (positionEl.value || "").trim();
+
+    if (!rawInput) return;
+
+    const position = rawPosition === "s" ? "left" : "right";
+
+    const allowedHosts = new Set([
+        "chat.whatsapp.com",
+        "wa.me",
+        "api.whatsapp.com",
+        "web.whatsapp.com",
+        "www.whatsapp.com",
+        "whatsapp.com"
+    ]);
+
+    const allowedPathPrefixes = [
+        "/send",
+        "/channel/"
+    ];
+
+    const isDeepLink = (value) => value.toLowerCase().startsWith("whatsapp://");
+
+    const normalizeHttpLink = (value) => {
+        const v = value.trim();
+        if (isDeepLink(v)) return v;
+        if (v.startsWith("https://")) return v;
+        if (v.startsWith("http://")) return `https://${v.slice("http://".length)}`;
+        return `https://${v}`;
+    };
+
+    const isWhatsappLink = (value) => {
+        if (!value) return false;
+
+        const v = value.trim();
+        if (isDeepLink(v)) return true;
+
+        const normalized = normalizeHttpLink(v);
+
+        try {
+            const url = new URL(normalized);
+
+            if (!allowedHosts.has(url.hostname)) return false;
+
+            if (url.hostname === "chat.whatsapp.com" || url.hostname === "wa.me") {
+                return true;
+            }
+
+            return allowedPathPrefixes.some(prefix => url.pathname.startsWith(prefix));
+        } catch {
+            return false;
+        }
+    };
+
+    const parseInput = (value) => {
+        const parts = value.split(";").map(p => (p || "").trim());
+        return {
+            target: parts[0] || "",
+            message: parts[1] || ""
+        };
+    };
+
+    const extractDeepLinkFallback = (deepLinkValue) => {
+        const result = { phone: "", text: "" };
+
+        try {
+            const query = deepLinkValue.split("?")[1] || "";
+            const params = new URLSearchParams(query);
+            result.phone = (params.get("phone") || "").replace(/[^0-9]/g, "");
+            result.text = params.get("text") || "";
+        } catch {}
+
+        return result;
+    };
+
+    const existingButton = document.getElementById("whatsappBtnFloating");
+    if (existingButton) {
+        existingButton.style[position] = "22px";
+        return;
+    }
+
+    const { target, message } = parseInput(rawInput);
+
+    const link = document.createElement("a");
+    link.target = "_blank";
+    link.id = "whatsappBtnFloating";
+    link.className = "whatsapp-btn-floating";
+    link.ariaLabel = "Ir para o Whatsapp";
+
+    if (isWhatsappLink(target)) {
+        if (isDeepLink(target)) {
+            const { phone, text } = extractDeepLinkFallback(target);
+
+            if (phone) {
+                const encoded = text ? encodeURIComponent(text) : "";
+                link.href = `https://wa.me/${phone}${encoded ? `?text=${encoded}` : ""}`;
+            } else {
+                link.href = normalizeHttpLink(target);
+            }
+        } else {
+            link.href = normalizeHttpLink(target);
+        }
+    } else {
+        const digits = target.replace(/[^0-9]/g, "");
+        if (digits.length < 10) return;
+
+        const encodedMessage = message ? encodeURIComponent(message) : "";
+        const withCountry = digits.startsWith("55") ? digits : `55${digits}`;
+
+        link.href = `https://wa.me/${withCountry}${encodedMessage ? `?text=${encodedMessage}` : ""}`;
+    }
+
+    const icon = document.createElement("i");
+    icon.id = "whatsappBtnIcon";
+    icon.className = "fa fa-whatsapp whatsapp-icon";
+    icon.ariaHidden = "true";
+
+    link.appendChild(icon);
+    document.body.appendChild(link);
+
+    link.style[position] = "22px";
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+    if (!whatsappButtonService.useDefaultButton) return;
+
+    if (typeof lazyLoadService === "undefined") {
+        whatsappButtonService.getWhatsappButton();
+        return;
+    }
+
+    lazyLoadService.addFunctionToQueue(whatsappButtonService.getWhatsappButton);
+});
